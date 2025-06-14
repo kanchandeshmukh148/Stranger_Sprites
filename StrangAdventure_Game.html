@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stranger Sprites - Escape the Demogorgon</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            color: #e0e0e0;
+        }
+        #gameCanvas {
+            display: block;
+            margin: 20px auto;
+            border: 2px solid #6a0dad;
+            box-shadow: 0 0 20px #8a2be2;
+            image-rendering: pixelated;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border: 1px solid #6a0dad;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border: 1px solid #6a0dad;
+        }
+        .power-btn {
+            background-color: #4b0082;
+            color: white;
+            border: 1px solid #8a2be2;
+            padding: 5px 10px;
+            margin: 2px;
+            cursor: pointer;
+        }
+        .power-btn.active {
+            background-color: #8a2be2;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    
+    <div id="ui">
+        <h2>STRANGER SPRITES</h2>
+        <div>Health: <span id="health">100</span>%</div>
+        <div>Power: <span id="power">100</span>%</div>
+        <div>Essence: <span id="essence">0</span></div>
+        <div>Time: <span id="time">0</span>s</div>
+    </div>
+    
+    <div id="controls">
+        <p><strong>CONTROLS:</strong> WASD = Move | SPACE = Dodge | Q/E = Switch Power | Left Click = Attack</p>
+        <div>
+            <button class="power-btn active" data-power="telekinesis">Telekinesis (1)</button>
+            <button class="power-btn" data-power="shadowdash">Shadow Dash (2)</button>
+            <button class="power-btn" data-power="mindflay">Mind Flay (3)</button>
+        </div>
+    </div>
+
+    <script>
+        // Game Constants
+        const TILE_SIZE = 32;
+        const PLAYER_SPEED = 3;
+        const DODGE_SPEED = 6;
+        const DODGE_DURATION = 15;
+        const DEMOGORGON_SPEED = 1.5;
+        const DEMOGORGON_AGGRO_SPEED = 3.5;
+        const POWER_DRAIN_RATE = 0.5;
+        const POWER_RECHARGE_RATE = 0.2;
+        const TELEKINESIS_COST = 10;
+        const SHADOWDASH_COST = 20;
+        const MINDFLAY_COST = 30;
+
+        // Game State
+        const game = {
+            canvas: null,
+            ctx: null,
+            lastTime: 0,
+            deltaTime: 0,
+            keys: {},
+            mouse: { x: 0, y: 0, clicked: false },
+            player: {
+                x: 400,
+                y: 300,
+                width: 24,
+                height: 24,
+                speed: PLAYER_SPEED,
+                health: 100,
+                maxHealth: 100,
+                power: 100,
+                maxPower: 100,
+                direction: { x: 0, y: 1 },
+                isDodging: false,
+                dodgeFrames: 0,
+                currentPower: 'telekinesis',
+                invincible: false,
+                invincibleFrames: 0,
+                attackCooldown: 0
+            },
+            demogorgon: {
+                x: 100,
+                y: 100,
+                width: 32,
+                height: 32,
+                speed: DEMOGORGON_SPEED,
+                aggroRange: 300,
+                attackRange: 40,
+                attackCooldown: 0,
+                visible: true,
+                visibilityTimer: 0
+            },
+            essence: 0,
+            time: 0,
+            gameObjects: [],
+            particles: [],
+            glitchEffect: 0,
+            map: {
+                width: 25,
+                height: 19,
+                tiles: [],
+                exits: []
+            },
+            debug: false
+        };
+
+        // Initialize the game
+        function init() {
+            game.canvas = document.getElementById('gameCanvas');
+            game.ctx = game.canvas.getContext('2d');
+            
+            // Generate a simple map
+            generateMap();
+            
+            // Set up event listeners
+            window.addEventListener('keydown', (e) => game.keys[e.key.toLowerCase()] = true);
+            window.addEventListener('keyup', (e) => game.keys[e.key.toLowerCase()] = false);
+            game.canvas.addEventListener('mousemove', updateMousePosition);
+            game.canvas.addEventListener('mousedown', () => game.mouse.clicked = true);
+            game.canvas.addEventListener('mouseup', () => game.mouse.clicked = false);
+            
+            // Set up power buttons
+            document.querySelectorAll('.power-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    game.player.currentPower = btn.dataset.power;
+                    document.querySelectorAll('.power-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                });
+            });
+            
+            // Start game loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Generate a procedural map
+        function generateMap() {
+            // Simple maze-like map
+            for (let y = 0; y < game.map.height; y++) {
+                game.map.tiles[y] = [];
+                for (let x = 0; x < game.map.width; x++) {
+                    // Border walls
+                    if (x === 0 || y === 0 || x === game.map.width - 1 || y === game.map.height - 1) {
+                        game.map.tiles[y][x] = 1; // Wall
+                    } else {
+                        // Random walls (20% chance)
+                        game.map.tiles[y][x] = Math.random() < 0.2 ? 1 : 0;
+                    }
+                }
+            }
+            
+            // Ensure player starting position is clear
+            const startX = Math.floor(game.player.x / TILE_SIZE);
+            const startY = Math.floor(game.player.y / TILE_SIZE);
+            game.map.tiles[startY][startX] = 0;
+            game.map.tiles[startY][startX + 1] = 0;
+            game.map.tiles[startY + 1][startX] = 0;
+            game.map.tiles[startY + 1][startX + 1] = 0;
+            
+            // Add some exits
+            game.map.exits.push({ x: game.map.width - 2, y: Math.floor(game.map.height / 2) });
+        }
+
+        // Update mouse position
+        function updateMousePosition(e) {
+            const rect = game.canvas.getBoundingClientRect();
+            game.mouse.x = e.clientX - rect.left;
+            game.mouse.y = e.clientY - rect.top;
+        }
+
+        // Main game loop
+        function gameLoop(timestamp) {
+            game.deltaTime = (timestamp - game.lastTime) / 1000;
+            game.lastTime = timestamp;
+            game.time += game.deltaTime;
+            
+            update();
+            render();
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Update game state
+        function update() {
+            // Update player
+            updatePlayer();
+            
+            // Update Demogorgon
+            updateDemogorgon();
+            
+            // Update game objects
+            updateGameObjects();
+            
+            // Update particles
+            updateParticles();
+            
+            // Update UI
+            updateUI();
+            
+            // Random glitch effects
+            if (Math.random() < 0.05) {
+                game.glitchEffect = Math.floor(Math.random() * 3) + 1;
+            } else {
+                game.glitchEffect = 0;
+            }
+        }
+
+        // Update player logic
+        function updatePlayer() {
+            // Movement
+            let moveX = 0;
+            let moveY = 0;
+            
+            if (!game.player.isDodging) {
+                if (game.keys['a'] || game.keys['arrowleft']) moveX = -1;
+                if (game.keys['d'] || game.keys['arrowright']) moveX = 1;
+                if (game.keys['w'] || game.keys['arrowup']) moveY = -1;
+                if (game.keys['s'] || game.keys['arrowdown']) moveY = 1;
+                
+                // Normalize diagonal movement
+                if (moveX !== 0 && moveY !== 0) {
+                    moveX *= 0.7071;
+                    moveY *= 0.7071;
+                }
+                
+                // Update direction for facing
+                if (moveX !== 0 || moveY !== 0) {
+                    game.player.direction = { x: moveX, y: moveY };
+                }
+            }
+            
+            // Dodge roll
+            if ((game.keys[' '] || game.mouse.clicked) && !game.player.isDodging && game.player.power >= SHADOWDASH_COST) {
+                game.player.isDodging = true;
+                game.player.dodgeFrames = DODGE_DURATION;
+                game.player.invincible = true;
+                game.player.invincibleFrames = DODGE_DURATION + 10;
+                game.player.power -= SHADOWDASH_COST;
+                
+                // Add dash particles
+                for (let i = 0; i < 10; i++) {
+                    game.particles.push({
+                        x: game.player.x,
+                        y: game.player.y,
+                        vx: -game.player.direction.x * 2 + (Math.random() - 0.5),
+                        vy: -game.player.direction.y * 2 + (Math.random() - 0.5),
+                        size: Math.random() * 3 + 2,
+                        color: '#8a2be2',
+                        life: 30 + Math.random() * 20
+                    });
+                }
+            }
+            
+            // Handle dodging state
+            if (game.player.isDodging) {
+                game.player.dodgeFrames--;
+                if (game.player.dodgeFrames <= 0) {
+                    game.player.isDodging = false;
+                } else {
+                    moveX = game.player.direction.x;
+                    moveY = game.player.direction.y;
+                    game.player.speed = DODGE_SPEED;
+                }
+            } else {
+                game.player.speed = PLAYER_SPEED;
+            }
+            
+            // Handle invincibility frames
+            if (game.player.invincible) {
+                game.player.invincibleFrames--;
+                if (game.player.invincibleFrames <= 0) {
+                    game.player.invincible = false;
+                }
+            }
+            
+            // Calculate new position
+            const newX = game.player.x + moveX * game.player.speed;
+            const newY = game.player.y + moveY * game.player.speed;
+            
+            // Collision detection with map
+            if (!checkCollision(newX, game.player.y, game.player.width, game.player.height)) {
+                game.player.x = newX;
+            }
+            if (!checkCollision(game.player.x, newY, game.player.width, game.player.height)) {
+                game.player.y = newY;
+            }
+            
+            // Check for exit
+            checkExit();
+            
+            // Power recharge
+            if (game.player.power < game.player.maxPower) {
+                game.player.power += POWER_RECHARGE_RATE;
+                if (game.player.power > game.player.maxPower) {
+                    game.player.power = game.player.maxPower;
+                }
+            }
+            
+            // Power switching
+            if (game.keys['q']) {
+                switchPower(-1);
+                game.keys['q'] = false; // Prevent rapid switching
+            }
+            if (game.keys['e']) {
+                switchPower(1);
+                game.keys['e'] = false;
+            }
+            
+            // Attack cooldown
+            if (game.player.attackCooldown > 0) {
+                game.player.attackCooldown--;
+            }
+        }
+
+        // Switch between powers
+        function switchPower(direction) {
+            const powers = ['telekinesis', 'shadowdash', 'mindflay'];
+            const currentIndex = powers.indexOf(game.player.currentPower);
+            let newIndex = (currentIndex + direction) % powers.length;
+            if (newIndex < 0) newIndex = powers.length - 1;
+            
+            game.player.currentPower = powers[newIndex];
+            
+            // Update UI buttons
+            document.querySelectorAll('.power-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.power === game.player.currentPower) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        // Update Demogorgon AI
+        function updateDemogorgon() {
+            // Calculate distance to player
+            const dx = game.player.x - game.demogorgon.x;
+            const dy = game.player.y - game.demogorgon.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            // Aggro behavior
+            if (distance < game.demogorgon.aggroRange) {
+                // Move toward player
+                game.demogorgon.speed = DEMOGORGON_AGGRO_SPEED;
+                
+                // Normalize direction
+                const normX = dx / distance;
+                const normY = dy / distance;
+                
+                // Calculate new position
+                const newX = game.demogorgon.x + normX * game.demogorgon.speed;
+                const newY = game.demogorgon.y + normY * game.demogorgon.speed;
+                
+                // Move if no collision
+                if (!checkCollision(newX, game.demogorgon.y, game.demogorgon.width, game.demogorgon.height)) {
+                    game.demogorgon.x = newX;
+                }
+                if (!checkCollision(game.demogorgon.x, newY, game.demogorgon.width, game.demogorgon.height)) {
+                    game.demogorgon.y = newY;
+                }
+                
+                // Attack if close enough
+                if (distance < game.demogorgon.attackRange && game.demogorgon.attackCooldown <= 0) {
+                    if (!game.player.invincible) {
+                        game.player.health -= 10;
+                        game.player.invincible = true;
+                        game.player.invincibleFrames = 30;
+                        
+                        // Knockback
+                        const knockback = 10;
+                        game.player.x -= normX * knockback;
+                        game.player.y -= normY * knockback;
+                    }
+                    game.demogorgon.attackCooldown = 60;
+                }
+            } else {
+                // Wander randomly
+                game.demogorgon.speed = DEMOGORGON_SPEED;
+                if (Math.random() < 0.02) {
+                    game.demogorgon.direction = {
+                        x: Math.random() * 2 - 1,
+                        y: Math.random() * 2 - 1
+                    };
+                }
+                
+                // Normalize wandering direction
+                const length = Math.sqrt(game.demogorgon.direction.x * game.demogorgon.direction.x + 
+                                       game.demogorgon.direction.y * game.demogorgon.direction.y);
+                if (length > 0) {
+                    game.demogorgon.direction.x /= length;
+                    game.demogorgon.direction.y /= length;
+                }
+                
+                // Calculate new position
+                const newX = game.demogorgon.x + game.demogorgon.direction.x * game.demogorgon.speed;
+                const newY = game.demogorgon.y + game.demogorgon.direction.y * game.demogorgon.speed;
+                
+                // Move if no collision
+                if (!checkCollision(newX, game.demogorgon.y, game.demogorgon.width, game.demogorgon.height)) {
+                    game.demogorgon.x = newX;
+                }
+                if (!checkCollision(game.demogorgon.x, newY, game.demogorgon.width, game.demogorgon.height)) {
+                    game.demogorgon.y = newY;
+                }
+            }
+            
+            // Update attack cooldown
+            if (game.demogorgon.attackCooldown > 0) {
+                game.demogorgon.attackCooldown--;
+            }
+            
+            // Random visibility flicker
+            if (Math.random() < 0.05) {
+                game.demogorgon.visible = !game.demogorgon.visible;
+                game.demogorgon.visibilityTimer = 5 + Math.random() * 10;
+            } else if (game.demogorgon.visibilityTimer > 0) {
+                game.demogorgon.visibilityTimer--;
+                if (game.demogorgon.visibilityTimer <= 0) {
+                    game.demogorgon.visible = true;
+                }
+            }
+        }
+
+        // Check collision with map
+        function checkCollision(x, y, width, height) {
+            // Convert to tile coordinates
+            const left = Math.floor(x / TILE_SIZE);
+            const right = Math.floor((x + width) / TILE_SIZE);
+            const top = Math.floor(y / TILE_SIZE);
+            const bottom = Math.floor((y + height) / TILE_SIZE);
+            
+            // Check each tile in the area
+            for (let ty = top; ty <= bottom; ty++) {
+                for (let tx = left; tx <= right; tx++) {
+                    if (tx >= 0 && tx < game.map.width && ty >= 0 && ty < game.map.height) {
+                        if (game.map.tiles[ty][tx] === 1) { // 1 is a wall
+                            return true;
+                        }
+                    } else {
+                        return true; // Out of bounds counts as collision
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Check if player reached an exit
+        function checkExit() {
+            const playerTileX = Math.floor(game.player.x / TILE_SIZE);
+            const playerTileY = Math.floor(game.player.y / TILE_SIZE);
+            
+            for (const exit of game.map.exits) {
+                if (playerTileX === exit.x && playerTileY === exit.y) {
+                    // Generate a new level
+                    generateMap();
+                    game.essence += 5;
+                    game.player.x = TILE_SIZE * 2;
+                    game.player.y = TILE_SIZE * 2;
+                    game.demogorgon.x = TILE_SIZE * (game.map.width - 3);
+                    game.demogorgon.y = TILE_SIZE * (game.map.height - 3);
+                    break;
+                }
+            }
+        }
+
+        // Update game objects (items, projectiles, etc.)
+        function updateGameObjects() {
+            // Spawn essence randomly
+            if (Math.random() < 0.005 && game.gameObjects.length < 5) {
+                game.gameObjects.push({
+                    x: Math.random() * (game.map.width - 2) * TILE_SIZE + TILE_SIZE,
+                    y: Math.random() * (game.map.height - 2) * TILE_SIZE + TILE_SIZE,
+                    type: 'essence',
+                    life: 600 // 10 seconds at 60fps
+                });
+            }
+            
+            // Update objects
+            for (let i = game.gameObjects.length - 1; i >= 0; i--) {
+                const obj = game.gameObjects[i];
+                obj.life--;
+                
+                // Check collision with player
+                const dx = game.player.x - obj.x;
+                const dy = game.player.y - obj.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < 20) {
+                    if (obj.type === 'essence') {
+                        game.essence++;
+                        game.player.health = Math.min(game.player.maxHealth, game.player.health + 10);
+                        game.particles.push({
+                            x: obj.x,
+                            y: obj.y,
+                            vx: 0,
+                            vy: 0,
+                            size: 5,
+                            color: '#00ff00',
+                            life: 20
+                        });
+                    }
+                    game.gameObjects.splice(i, 1);
+                } else if (obj.life <= 0) {
+                    game.gameObjects.splice(i, 1);
+                }
+            }
+        }
+
+        // Update particles
+        function updateParticles() {
+            for (let i = game.particles.length - 1; i >= 0; i--) {
+                const p = game.particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life--;
+                
+                if (p.life <= 0) {
+                    game.particles.splice(i, 1);
+                }
+            }
+        }
+
+        // Update UI elements
+        function updateUI() {
+            document.getElementById('health').textContent = Math.floor(game.player.health);
+            document.getElementById('power').textContent = Math.floor(game.player.power);
+            document.getElementById('essence').textContent = game.essence;
+            document.getElementById('time').textContent = Math.floor(game.time);
+        }
+
+        // Render everything
+        function render() {
+            // Clear canvas
+            game.ctx.fillStyle = '#111';
+            game.ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
+            
+            // Draw map with visible grid
+            for (let y = 0; y < game.map.height; y++) {
+                for (let x = 0; x < game.map.width; x++) {
+                    if (game.map.tiles[y][x] === 1) { // Wall
+                        game.ctx.fillStyle = '#333';
+                        game.ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        
+                        // Wall shading
+                        game.ctx.fillStyle = '#222';
+                        game.ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, 2);
+                        game.ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, 2, TILE_SIZE);
+                    } else { // Floor
+                        game.ctx.fillStyle = '#1a1a1a';
+                        game.ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        
+                        // Visible grid (updated)
+                        game.ctx.strokeStyle = 'rgba(138, 43, 226, 1.0)'; // Semi-transparent purple
+                        game.ctx.lineWidth = 1;
+                        game.ctx.strokeRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                    }
+                }
+            }
+            
+            // Draw exits
+            game.ctx.fillStyle = '#8a2be2';
+            for (const exit of game.map.exits) {
+                game.ctx.fillRect(exit.x * TILE_SIZE + 4, exit.y * TILE_SIZE + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+            }
+            
+            // Draw game objects
+            game.ctx.save();
+            for (const obj of game.gameObjects) {
+                if (obj.type === 'essence') {
+                    // Pulsing effect
+                    const size = 10 + Math.sin(game.time * 5) * 2;
+                    
+                    game.ctx.fillStyle = '#00ff00';
+                    game.ctx.beginPath();
+                    game.ctx.arc(obj.x, obj.y, size, 0, Math.PI * 2);
+                    game.ctx.fill();
+                    
+                    game.ctx.strokeStyle = '#ffffff';
+                    game.ctx.lineWidth = 2;
+                    game.ctx.beginPath();
+                    game.ctx.arc(obj.x, obj.y, size + 2, 0, Math.PI * 2);
+                    game.ctx.stroke();
+                }
+            }
+            game.ctx.restore();
+            
+            // Draw particles
+            for (const p of game.particles) {
+                game.ctx.fillStyle = p.color;
+                game.ctx.beginPath();
+                game.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                game.ctx.fill();
+            }
+            
+            // Draw Demogorgon
+            if (game.demogorgon.visible) {
+                game.ctx.fillStyle = '#8b0000';
+                game.ctx.fillRect(
+                    game.demogorgon.x - game.demogorgon.width / 2,
+                    game.demogorgon.y - game.demogorgon.height / 2,
+                    game.demogorgon.width,
+                    game.demogorgon.height
+                );
+                
+                // Demogorgon face/mouth
+                game.ctx.fillStyle = '#000';
+                game.ctx.beginPath();
+                game.ctx.arc(
+                    game.demogorgon.x,
+                    game.demogorgon.y,
+                    game.demogorgon.width / 3,
+                    0,
+                    Math.PI * 2
+                );
+                game.ctx.fill();
+                
+                // Teeth
+                game.ctx.fillStyle = '#fff';
+                for (let i = 0; i < 8; i++) {
+                    const angle = (i / 8) * Math.PI * 2;
+                    const x = game.demogorgon.x + Math.cos(angle) * (game.demogorgon.width / 3);
+                    const y = game.demogorgon.y + Math.sin(angle) * (game.demogorgon.width / 3);
+                    game.ctx.beginPath();
+                    game.ctx.moveTo(x, y);
+                    game.ctx.lineTo(
+                        game.demogorgon.x + Math.cos(angle) * (game.demogorgon.width / 2),
+                        game.demogorgon.y + Math.sin(angle) * (game.demogorgon.width / 2)
+                    );
+                    game.ctx.lineTo(
+                        game.demogorgon.x + Math.cos(angle + 0.2) * (game.demogorgon.width / 3),
+                        game.demogorgon.y + Math.sin(angle + 0.2) * (game.demogorgon.width / 3)
+                    );
+                    game.ctx.fill();
+                }
+            }
+            
+            // Draw player
+            if (!game.player.invincible || Math.floor(game.time * 10) % 2 === 0) {
+                game.ctx.fillStyle = '#4169e1';
+                game.ctx.fillRect(
+                    game.player.x - game.player.width / 2,
+                    game.player.y - game.player.height / 2,
+                    game.player.width,
+                    game.player.height
+                );
+                
+                // Player face (indicates direction)
+                game.ctx.fillStyle = '#fff';
+                const faceX = game.player.x + game.player.direction.x * 5;
+                const faceY = game.player.y + game.player.direction.y * 5;
+                game.ctx.beginPath();
+                game.ctx.arc(faceX, faceY, 4, 0, Math.PI * 2);
+                game.ctx.fill();
+            }
+            
+            // Apply glitch effect
+            if (game.glitchEffect > 0) {
+                const glitchAmount = game.glitchEffect * 2;
+                const imageData = game.ctx.getImageData(0, 0, game.canvas.width, game.canvas.height);
+                const data = imageData.data;
+                
+                // Random pixel shifts
+                for (let i = 0; i < data.length; i += 4) {
+                    if (Math.random() < 0.1) {
+                        // Randomly shift RGB channels
+                        const shift = Math.floor(Math.random() * glitchAmount * 2) - glitchAmount;
+                        if (i + shift * 4 >= 0 && i + shift * 4 < data.length) {
+                            data[i] = data[i + shift * 4];     // R
+                            data[i + 1] = data[i + shift * 4 + 1]; // G
+                            data[i + 2] = data[i + shift * 4 + 2]; // B
+                        }
+                    }
+                }
+                
+                game.ctx.putImageData(imageData, 0, 0);
+            }
+            
+            // Draw power effect if active
+            if (game.mouse.clicked && game.player.power > 0 && game.player.attackCooldown <= 0) {
+                usePower();
+            }
+        }
+
+        // Use current power
+        function usePower() {
+            switch (game.player.currentPower) {
+                case 'telekinesis':
+                    if (game.player.power >= TELEKINESIS_COST) {
+                        game.player.power -= TELEKINESIS_COST;
+                        
+                        // Push Demogorgon away
+                        const dx = game.demogorgon.x - game.player.x;
+                        const dy = game.demogorgon.y - game.player.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        
+                        if (distance < 200) {
+                            const force = 300 / distance;
+                            game.demogorgon.x += dx / distance * force;
+                            game.demogorgon.y += dy / distance * force;
+                            
+                            // Add particles
+                            for (let i = 0; i < 15; i++) {
+                                game.particles.push({
+                                    x: game.demogorgon.x,
+                                    y: game.demogorgon.y,
+                                    vx: (Math.random() - 0.5) * 3,
+                                    vy: (Math.random() - 0.5) * 3,
+                                    size: Math.random() * 4 + 2,
+                                    color: '#4169e1',
+                                    life: 30 + Math.random() * 20
+                                });
+                            }
+                        }
+                        
+                        game.player.attackCooldown = 20;
+                    }
+                    break;
+                    
+                case 'shadowdash':
+                    // Handled in movement code
+                    break;
+                    
+                case 'mindflay':
+                    if (game.player.power >= MINDFLAY_COST) {
+                        game.player.power -= MINDFLAY_COST;
+                        
+                        // Damage Demogorgon if in range
+                        const dx = game.demogorgon.x - game.player.x;
+                        const dy = game.demogorgon.y - game.player.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        
+                        if (distance < 150) {
+                            // Visual effect
+                            for (let i = 0; i < 30; i++) {
+                                const angle = Math.random() * Math.PI * 2;
+                                const speed = Math.random() * 3 + 1;
+                                game.particles.push({
+                                    x: game.demogorgon.x,
+                                    y: game.demogorgon.y,
+                                    vx: Math.cos(angle) * speed,
+                                    vy: Math.sin(angle) * speed,
+                                    size: Math.random() * 3 + 1,
+                                    color: '#ff00ff',
+                                    life: 20 + Math.random() * 20
+                                });
+                            }
+                            
+                            // Make Demogorgon visible
+                            game.demogorgon.visible = true;
+                            game.demogorgon.visibilityTimer = 60;
+                            
+                            // Slow Demogorgon
+                            game.demogorgon.speed *= 0.5;
+                        }
+                        
+                        game.player.attackCooldown = 40;
+                    }
+                    break;
+            }
+        }
+
+        // Start the game
+        window.onload = init;
+    </script>
+</body>
+</html>
